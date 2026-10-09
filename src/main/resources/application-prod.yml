@@ -1,0 +1,10 @@
+# Perfil de producao: log enxuto e sessao JWT mais curta
+app:
+  jwt:
+    expiration-minutes: ${JWT_EXPIRATION_MINUTES:120}
+
+logging:
+  level:
+    root: INFO
+    br.com.fiap.inovagab: INFO
+    org.springframework.security: WARN

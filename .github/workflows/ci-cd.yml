@@ -1,0 +1,176 @@
+name: CI/CD InovaGAB
+
+# Fluxo:
+#   build -> testes -> imagem Docker (GHCR) -> deploy staging -> deploy producao
+#
+#   pull request para main : build + testes + build da imagem (sem publicar, sem deploy)
+#   push em develop        : ate o deploy em staging
+#   push em main           : pipeline completo, staging e depois producao
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cicd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  JAVA_VERSION: "21"
+
+jobs:
+  build:
+    name: 1. Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Compilar
+        run: mvn -B -ntp clean compile
+
+  test:
+    name: 2. Testes automatizados
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Executar testes e empacotar
+        run: mvn -B -ntp verify
+
+      - name: Resumo dos testes
+        if: always()
+        run: |
+          total=0; falhas=0; erros=0; ignorados=0
+          for f in target/surefire-reports/TEST-*.xml; do
+            [ -f "$f" ] || continue
+            linha=$(grep -o '<testsuite [^>]*>' "$f")
+            t=$(echo "$linha" | grep -o ' tests="[0-9]*"'    | grep -o '[0-9]*')
+            fa=$(echo "$linha" | grep -o ' failures="[0-9]*"' | grep -o '[0-9]*')
+            e=$(echo "$linha" | grep -o ' errors="[0-9]*"'   | grep -o '[0-9]*')
+            s=$(echo "$linha" | grep -o ' skipped="[0-9]*"'  | grep -o '[0-9]*')
+            total=$((total + t)); falhas=$((falhas + fa)); erros=$((erros + e)); ignorados=$((ignorados + s))
+          done
+          {
+            echo "## Testes automatizados"
+            echo "| Total | Sucesso | Falhas | Erros | Ignorados |"
+            echo "|---|---|---|---|---|"
+            echo "| $total | $((total - falhas - erros - ignorados)) | $falhas | $erros | $ignorados |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar relatorios de teste
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorios-testes
+          path: target/surefire-reports/
+          retention-days: 14
+
+      - name: Publicar JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: inovagab-backend-jar
+          path: target/inovagab-backend-*.jar
+          retention-days: 14
+
+  docker:
+    name: 3. Imagem Docker
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.tags.outputs.image }}
+      version: ${{ steps.tags.outputs.version }}
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Definir nome e tags da imagem
+        id: tags
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}/inovagab-backend"
+          version="sha-${GITHUB_SHA::7}"
+          tags="$repo:$version,$repo:${GITHUB_REF_NAME//\//-}"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then tags="$tags,$repo:latest"; fi
+          echo "image=$repo:$version" >> "$GITHUB_OUTPUT"
+          echo "version=$version"     >> "$GITHUB_OUTPUT"
+          echo "tags=$tags"           >> "$GITHUB_OUTPUT"
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login no GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build e push da imagem
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resumo da imagem
+        run: |
+          {
+            echo "## Imagem Docker"
+            echo "Tags: \`${{ steps.tags.outputs.tags }}\`"
+            echo
+            echo "Publicada no GHCR: **${{ github.event_name != 'pull_request' }}**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-staging:
+    name: 4. Deploy staging
+    needs: docker
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      env-file: env/staging.env
+      port: "8081"
+      image: ${{ needs.docker.outputs.image }}
+      version: ${{ needs.docker.outputs.version }}
+    secrets: inherit
+
+  deploy-production:
+    name: 5. Deploy producao
+    needs: [docker, deploy-staging]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: production
+      env-file: env/production.env
+      port: "8082"
+      image: ${{ needs.docker.outputs.image }}
+      version: ${{ needs.docker.outputs.version }}
+    secrets: inherit

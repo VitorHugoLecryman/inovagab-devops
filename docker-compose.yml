@@ -1,0 +1,64 @@
+# Orquestracao da aplicacao InovaGAB: API Spring Boot + MongoDB.
+#
+# O mesmo arquivo atende local, staging e producao. O que muda entre eles vem das variaveis
+# de ambiente (arquivo .env local, ou env/staging.env / env/production.env no pipeline).
+# Cada ambiente sobe com um nome de projeto proprio (-p), entao rede e volume ficam isolados:
+#   inovagab-staging_inovagab-net / inovagab-staging_mongo-data
+#   inovagab-production_inovagab-net / inovagab-production_mongo-data
+
+name: ${COMPOSE_PROJECT_NAME:-inovagab-local}
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-inovagab}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-inovagab-local}
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - inovagab-net
+    # o banco NAO e publicado para fora: so a API o acessa, pela rede interna
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  api:
+    image: ${API_IMAGE:-inovagab-backend:local}
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-default}
+      APP_AMBIENTE: ${APP_AMBIENTE:-local}
+      APP_VERSION: ${APP_VERSION:-local}
+      MONGODB_URI: mongodb://${MONGO_USER:-inovagab}:${MONGO_PASSWORD:-inovagab-local}@mongo:27017/${MONGO_DATABASE:-inovagab}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:-inovagab-chave-local-de-desenvolvimento-com-tamanho-suficiente-256-bits}
+      SEED_ENABLED: ${SEED_ENABLED:-true}
+      SEED_SENHA: ${SEED_SENHA:-123456}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      JAVA_OPTS: ${JAVA_OPTS:--XX:MaxRAMPercentage=75.0}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    networks:
+      - inovagab-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+networks:
+  inovagab-net:
+    driver: bridge
+
+volumes:
+  mongo-data:

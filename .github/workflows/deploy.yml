@@ -1,0 +1,125 @@
+name: Deploy (reutilizavel)
+
+# Workflow chamado pelo ci-cd.yml para staging e producao, garantindo que os dois ambientes
+# sao implantados exatamente pelos mesmos passos. So mudam o arquivo de configuracao e os secrets.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      env-file:
+        type: string
+        required: true
+      port:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Deploy em ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # Environments do GitHub: secrets separados por ambiente e, em producao, aprovacao manual opcional
+    environment:
+      name: ${{ inputs.environment }}
+    env:
+      API_IMAGE: ${{ inputs.image }}
+      APP_VERSION: ${{ inputs.version }}
+      PROJETO: inovagab-${{ inputs.environment }}
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Login no GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Carregar segredos do ambiente
+        env:
+          JWT_SECRET_CFG: ${{ secrets.JWT_SECRET }}
+          MONGO_PASSWORD_CFG: ${{ secrets.MONGO_PASSWORD }}
+          GEMINI_API_KEY_CFG: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          # Se o secret nao estiver cadastrado no Environment, gera um valor aleatorio para este deploy
+          jwt="${JWT_SECRET_CFG:-$(openssl rand -hex 48)}"
+          mongo="${MONGO_PASSWORD_CFG:-$(openssl rand -hex 24)}"
+          echo "::add-mask::$jwt"
+          echo "::add-mask::$mongo"
+          {
+            echo "JWT_SECRET=$jwt"
+            echo "MONGO_PASSWORD=$mongo"
+            echo "GEMINI_API_KEY=$GEMINI_API_KEY_CFG"
+          } >> "$GITHUB_ENV"
+          [ -n "$JWT_SECRET_CFG" ]     && echo "JWT_SECRET: secret do environment" || echo "JWT_SECRET: gerado para este deploy"
+          [ -n "$MONGO_PASSWORD_CFG" ] && echo "MONGO_PASSWORD: secret do environment" || echo "MONGO_PASSWORD: gerado para este deploy"
+          [ -n "$GEMINI_API_KEY_CFG" ] && echo "GEMINI_API_KEY: configurada" || echo "GEMINI_API_KEY: nao configurada (endpoints de IA respondem 503)"
+
+      - name: Baixar a imagem publicada
+        run: docker compose -p "$PROJETO" --env-file ${{ inputs.env-file }} pull
+
+      - name: Subir os containers
+        run: |
+          docker compose -p "$PROJETO" --env-file ${{ inputs.env-file }} \
+            up -d --no-build --wait --wait-timeout 240
+          docker compose -p "$PROJETO" --env-file ${{ inputs.env-file }} ps
+
+      - name: Smoke test
+        run: |
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh "http://localhost:${{ inputs.port }}" "${{ inputs.environment }}" | tee smoke.log
+
+      - name: Evidencias do ambiente
+        if: always()
+        run: |
+          {
+            echo "## Deploy em ${{ inputs.environment }}"
+            echo "| Item | Valor |"
+            echo "|---|---|"
+            echo "| Imagem | \`${{ inputs.image }}\` |"
+            echo "| Projeto Compose | \`$PROJETO\` |"
+            echo "| Porta | ${{ inputs.port }} |"
+            echo
+            echo "### Containers"
+            echo '```'
+            docker compose -p "$PROJETO" --env-file ${{ inputs.env-file }} ps
+            echo '```'
+            echo "### Redes e volumes"
+            echo '```'
+            docker network ls --filter "name=$PROJETO"
+            echo
+            docker volume ls --filter "name=$PROJETO"
+            echo '```'
+            echo "### /actuator/health"
+            echo '```json'
+            curl -s "http://localhost:${{ inputs.port }}/actuator/health" | jq . || true
+            echo '```'
+            echo "### /actuator/info"
+            echo '```json'
+            curl -s "http://localhost:${{ inputs.port }}/actuator/info" | jq . || true
+            echo '```'
+            echo "### Smoke test"
+            echo '```'
+            cat smoke.log 2>/dev/null || echo "smoke test nao executado"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Logs da API
+        if: always()
+        run: docker compose -p "$PROJETO" --env-file ${{ inputs.env-file }} logs --tail 150 api
+
+      - name: Encerrar ambiente efemero
+        if: always()
+        run: docker compose -p "$PROJETO" --env-file ${{ inputs.env-file }} down -v

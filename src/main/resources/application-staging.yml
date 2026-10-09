@@ -1,0 +1,5 @@
+# Perfil de homologacao: mesmo comportamento de producao, mas com log detalhado e carga de dados de teste
+logging:
+  level:
+    br.com.fiap.inovagab: DEBUG
+    org.springframework.security: INFO
