@@ -19,9 +19,7 @@ inovagab-devops/
 │   ├── ci-cd.yml            # pipeline principal: build -> testes -> imagem -> staging -> produção
 │   └── deploy.yml           # deploy reutilizável (mesmos passos para staging e produção)
 ├── docs/
-│   ├── documentacao-tecnica.html   # fonte da documentação
 │   ├── InovaGAB - DevOps.pdf       # documentação técnica com evidências
-│   ├── gerar-pdf.ps1               # regera o PDF depois de colocar os prints
 │   └── prints/                     # evidências (pipeline, staging, produção)
 ├── env/
 │   ├── staging.env          # configuração do ambiente de staging (sem segredos)

@@ -47,7 +47,10 @@ management:
         include: health,info,metrics,loggers
   endpoint:
     health:
-      show-details: always
+      # publico ve so o status de cada componente (UP/DOWN); disco, caminhos e versoes so para LIDER
+      show-components: always
+      show-details: when-authorized
+      roles: LIDER
       probes:
         enabled: true
   info:
