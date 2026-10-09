@@ -236,6 +236,9 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]
 
 As evidências estão em [`docs/prints/`](docs/prints/) e também na documentação em PDF.
 
+- Repositório: https://github.com/VitorHugoLecryman/inovagab-devops
+- Execução do pipeline registrada nos prints: https://github.com/VitorHugoLecryman/inovagab-devops/actions/runs/37876840127
+
 | Evidência | Arquivo |
 |---|---|
 | Pipeline completo (todas as etapas verdes) | `docs/prints/01-pipeline-completo.png` |
